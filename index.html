@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tracer">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Shot Tracer</title>
+<style>
+  :root{
+    --bg:#000;
+    --glass:rgba(20,20,22,.55);
+    --glass-strong:rgba(28,28,30,.92);
+    --line:rgba(255,255,255,.14);
+    --text:#fff;
+    --muted:rgba(255,255,255,.62);
+    --accent:#ff2d2d;
+    --ok:#34c759;
+    --warn:#ffcc00;
+    --sat:env(safe-area-inset-top,0px);
+    --sab:env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Apple SD Gothic Neo",system-ui,sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overscroll-behavior:none;touch-action:none}
+  #stage{position:fixed;inset:0}
+  video#cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;pointer-events:none}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #ui{touch-action:none}
+
+  .pill{position:fixed;left:16px;top:calc(var(--sat) + 12px);display:flex;align-items:center;gap:8px;
+    padding:8px 14px;border-radius:999px;background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    font-size:14px;font-weight:600;letter-spacing:-.2px;border:1px solid var(--line);max-width:calc(100% - 92px)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--ok)} .dot.rec{background:var(--accent);animation:pulse 1s infinite}
+  .dot.warn{background:var(--warn)}
+  @keyframes pulse{50%{opacity:.25}}
+
+  .iconbtn{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line);
+    background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#fff}
+  .iconbtn:active{transform:scale(.94)}
+  .iconbtn svg{width:22px;height:22px}
+  #btnSettings{position:fixed;right:16px;top:calc(var(--sat) + 8px)}
+
+  #recTime{position:fixed;left:50%;top:calc(var(--sat) + 14px);transform:translateX(-50%);display:none;
+    background:var(--accent);padding:4px 10px;border-radius:6px;font-weight:700;font-variant-numeric:tabular-nums;font-size:14px}
+
+  .bar{position:fixed;left:0;right:0;bottom:calc(var(--sab) + 18px);display:flex;align-items:center;justify-content:center;gap:44px}
+  #btnRec{width:74px;height:74px;border-radius:50%;border:4px solid #fff;background:transparent;display:grid;place-items:center}
+  #btnRec i{display:block;width:58px;height:58px;border-radius:50%;background:var(--accent);transition:all .2s}
+  #btnRec.on i{width:28px;height:28px;border-radius:7px}
+  #btnRec:active{transform:scale(.95)}
+
+  #toast{position:fixed;left:50%;bottom:calc(var(--sab) + 112px);transform:translateX(-50%);padding:9px 14px;border-radius:12px;
+    background:var(--glass-strong);font-size:14px;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
+  #toast.show{opacity:1}
+
+  /* Start screen */
+  #start{position:fixed;inset:0;background:radial-gradient(120% 80% at 50% 0%,#2a0d0d 0%,#000 60%);display:flex;flex-direction:column;
+    padding:calc(var(--sat) + 48px) 24px calc(var(--sab) + 28px);z-index:20}
+  #start h1{font-size:40px;font-weight:800;letter-spacing:-1.2px;line-height:1.05}
+  #start h1 span{color:var(--accent)}
+  #start .sub{color:var(--muted);margin-top:10px;font-size:16px}
+  #start ol{list-style:none;margin-top:36px;display:flex;flex-direction:column;gap:14px;counter-reset:s}
+  #start li{display:flex;gap:12px;font-size:15px;line-height:1.45;color:rgba(255,255,255,.86)}
+  #start li::before{counter-increment:s;content:counter(s);flex:none;width:24px;height:24px;border-radius:50%;
+    background:rgba(255,45,45,.18);color:#ff6b6b;font-weight:700;font-size:13px;display:grid;place-items:center;margin-top:1px}
+  #start .grow{flex:1}
+  .primary{width:100%;height:56px;border-radius:16px;border:0;background:var(--accent);color:#fff;font-size:17px;font-weight:700}
+  .primary:active{opacity:.85}
+  #err{color:#ff8a8a;font-size:14px;margin-bottom:12px;min-height:20px;line-height:1.4}
+
+  /* Sheet */
+  #sheetWrap{position:fixed;inset:0;z-index:30;display:none}
+  #sheetWrap.open{display:block}
+  #sheetBg{position:absolute;inset:0;background:rgba(0,0,0,.35)}
+  #sheet{position:absolute;left:0;right:0;bottom:0;background:var(--glass-strong);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+    border-radius:22px 22px 0 0;padding:10px 20px calc(var(--sab) + 20px);max-height:82vh;overflow-y:auto;touch-action:pan-y}
+  .grab{width:38px;height:5px;border-radius:3px;background:rgba(255,255,255,.3);margin:0 auto 12px}
+  #sheet h2{font-size:20px;font-weight:700;margin-bottom:6px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row .lbl{font-size:15px}
+  .row .hint{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35}
+  .row input[type=range]{width:46%;accent-color:var(--accent)}
+  .val{font-variant-numeric:tabular-nums;color:var(--muted);font-size:13px;min-width:28px;text-align:right}
+  .sw{position:relative;width:51px;height:31px;flex:none}
+  .sw input{opacity:0;width:0;height:0}
+  .sw span{position:absolute;inset:0;border-radius:16px;background:rgba(120,120,128,.36);transition:.2s}
+  .sw span::after{content:"";position:absolute;left:2px;top:2px;width:27px;height:27px;border-radius:50%;background:#fff;transition:.2s}
+  .sw input:checked+span{background:var(--ok)}
+  .sw input:checked+span::after{transform:translateX(20px)}
+  .chips{display:flex;gap:10px}
+  .chip{width:28px;height:28px;border-radius:50%;border:2px solid transparent}
+  .chip.sel{border-color:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.6) inset}
+  .ghost{width:100%;height:46px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:#fff;font-size:15px;font-weight:600;margin-top:10px}
+
+  /* Result modal */
+  #result{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.92);display:none;flex-direction:column;
+    padding:calc(var(--sat) + 16px) 16px calc(var(--sab) + 16px);gap:12px}
+  #result.open{display:flex}
+  #result video{flex:1;min-height:0;width:100%;object-fit:contain;border-radius:14px;background:#111}
+  #result .btns{display:flex;gap:10px}
+  #result .btns button,#result .btns a{flex:1;height:50px;border-radius:14px;border:0;font-size:16px;font-weight:700;
+    display:grid;place-items:center;text-decoration:none;color:#fff;background:rgba(255,255,255,.12)}
+  #result .btns .save{background:var(--accent)}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="view"></canvas>
+  <canvas id="ui"></canvas>
+</div>
+
+<div class="pill" id="status"><i class="dot" id="dot"></i><span id="statusText">대기</span></div>
+<div id="recTime">00:00</div>
+<button class="iconbtn" id="btnSettings" aria-label="설정">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+</button>
+
+<div class="bar">
+  <button class="iconbtn" id="btnClear" aria-label="궤적 지우기">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.8c0-.4.4-.8.8-.8h4.4c.4 0 .8.4.8.8V7M6.5 7l.9 12.2c.1.5.5.8 1 .8h7.2c.5 0 .9-.3 1-.8L17.5 7"/></svg>
+  </button>
+  <button id="btnRec" aria-label="녹화"><i></i></button>
+  <button class="iconbtn" id="btnArm" aria-label="추적 일시정지">
+    <svg id="icoPause" viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1"/><rect x="13.9" y="5" width="3.6" height="14" rx="1"/></svg>
+    <svg id="icoPlay" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M8 5.6v12.8c0 .8.9 1.3 1.5.8l9.6-6.4c.6-.4.6-1.2 0-1.6L9.5 4.8C8.9 4.3 8 4.8 8 5.6z"/></svg>
+  </button>
+</div>
+<div id="toast"></div>
+
+<div id="start">
+  <h1>Shot<br><span>Tracer</span></h1>
+  <p class="sub">공의 궤적을 실시간으로 그려줍니다.</p>
+  <ol>
+    <li>공 뒤쪽 2~4m에서 타깃 방향을 향해 폰을 세워 두세요. 삼각대나 거치대로 고정해야 정확해요.</li>
+    <li>화면에서 공을 탭하세요. 원이 공에 붙습니다.</li>
+    <li>치면 자동으로 선이 그려지고, 앱이 켜져 있는 동안 샷마다 선이 계속 쌓입니다.</li>
+    <li>가운데 버튼으로 궤적이 들어간 영상을 녹화해 사진 앱에 저장할 수 있어요.</li>
+  </ol>
+  <div class="grow"></div>
+  <p id="err"></p>
+  <button class="primary" id="btnStart">카메라 시작</button>
+</div>
+
+<div id="sheetWrap">
+  <div id="sheetBg"></div>
+  <div id="sheet">
+    <div class="grab"></div>
+    <h2>설정</h2>
+    <div class="row"><div><div class="lbl">감도</div><div class="hint">높을수록 멀리 간 작은 공도 잡지만 잡음에 민감해요</div></div>
+      <input type="range" id="sSens" min="1" max="10" step="1"><span class="val" id="vSens"></span></div>
+    <div class="row"><div><div class="lbl">궤적 자동 완성</div><div class="hint">공이 안 보이게 된 뒤 남은 비행 곡선을 예측해서 그려요</div></div>
+      <label class="sw"><input type="checkbox" id="sAuto"><span></span></label></div>
+    <div class="row"><div><div class="lbl">낙하 길이</div><div class="hint">자동 완성 시 정점 이후 얼마나 내려올지</div></div>
+      <input type="range" id="sDrop" min="0" max="80" step="5"><span class="val" id="vDrop"></span></div>
+    <div class="row"><div><div class="lbl">연습 스윙 무시</div><div class="hint">공이 실제로 티에서 사라졌을 때만 추적 시작</div></div>
+      <label class="sw"><input type="checkbox" id="sTee"><span></span></label></div>
+    <div class="row"><div><div class="lbl">이전 궤적 유지</div><div class="hint">끄면 새 샷마다 이전 선을 지워요</div></div>
+      <label class="sw"><input type="checkbox" id="sKeep"><span></span></label></div>
+    <div class="row"><div class="lbl">선 색상</div><div class="chips" id="chips"></div></div>
+    <div class="row"><div class="lbl">선 굵기</div><input type="range" id="sWidth" min="2" max="12" step="1"><span class="val" id="vWidth"></span></div>
+    <div class="row" id="zoomRow" style="display:none"><div class="lbl">줌</div><input type="range" id="sZoom" min="1" max="3" step="0.1"><span class="val" id="vZoom"></span></div>
+    <div class="row"><div><div class="lbl">감지 화면 보기</div><div class="hint">움직임 감지 영역을 표시해요 (조정용)</div></div>
+      <label class="sw"><input type="checkbox" id="sDebug"><span></span></label></div>
+    <button class="ghost" id="btnDemo">미리보기 궤적 그리기</button>
+  </div>
+</div>
+
+<div id="result">
+  <video id="resVideo" playsinline controls loop></video>
+  <div class="btns">
+    <button id="btnResClose">닫기</button>
+    <button class="save" id="btnResSave">사진에 저장</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------------- Settings ---------------- */
+const DEFAULTS = { sens: 6, auto: true, drop: 30, tee: true, keep: true, color: '#ff2d2d', width: 5, debug: false, zoom: 1 };
+const COLORS = ['#ff2d2d', '#ffd60a', '#ffffff', '#30d5ff', '#34c759'];
+let S = { ...DEFAULTS };
+try { Object.assign(S, JSON.parse(localStorage.getItem('tracer.settings.v1') || '{}')); } catch (e) {}
+const saveSettings = () => { try { localStorage.setItem('tracer.settings.v1', JSON.stringify(S)); } catch (e) {} };
+// sensitivity 1..10 -> motion threshold (lower = more sensitive)
+const thresh = () => Math.round(34 - S.sens * 2.4);
+
+/* ---------------- DOM ---------------- */
+const $ = id => document.getElementById(id);
+const video = $('cam'), view = $('view'), ui = $('ui');
+const vctx = view.getContext('2d');
+const uctx = ui.getContext('2d');
+
+/* ---------------- Processing buffers ---------------- */
+const PW = 360;               // processing width (px)
+let PH = 640;                 // set from video aspect
+const proc = document.createElement('canvas');
+const pctx = proc.getContext('2d', { willReadFrequently: true });
+let G = [], GT = [0, 0, 0];   // three gray frames: G[0] oldest .. G[2] newest
+let stamp, stack, stampId = 0;
+let framesSeen = 0;
+let rowMax = 640;
+
+function allocBuffers() {
+  PH = Math.round(PW * video.videoHeight / video.videoWidth);
+  proc.width = PW; proc.height = PH;
+  G = [new Uint8Array(PW * PH), new Uint8Array(PW * PH), new Uint8Array(PW * PH)];
+  stamp = new Int32Array(PW * PH);
+  stack = new Int32Array(PW * PH);
+  framesSeen = 0;
+}
+
+/* ---------------- State ---------------- */
+let tee = null;               // {x,y} in normalized video coords
+let teeR = 6;                 // ring radius in proc px
+let teeSet = false;
+let teeBase = 0, teeBaseN = 0, teeGoneT = -1e9, teeGoneRun = 0;
+let state = 'off';            // off | armed | tracking | done | paused
+let stateT = 0;
+let cands = [];
+let track = null;
+let traces = [];              // {pts:[[nx,ny]], ext:[[nx,ny]], color, width, tEnd}
+let shakeUntil = 0;
+let lastDebug = null;
+try { const t = JSON.parse(localStorage.getItem('tracer.tee.v1') || 'null'); if (t && t.x > 0) { tee = t; teeSet = true; } } catch (e) {}
+if (!tee) tee = { x: 0.5, y: 0.8 };
+
+function setState(s) {
+  state = s; stateT = performance.now();
+  if (s === 'armed') { cands = []; track = null; }
+  updateStatus();
+}
+
+/* ---------------- Gray conversion ---------------- */
+function grabFrame(t) {
+  // rotate buffers
+  const old = G[0]; G[0] = G[1]; G[1] = G[2]; G[2] = old;
+  GT[0] = GT[1]; GT[1] = GT[2]; GT[2] = t;
+  rowMax = Math.min(PH, Math.round(tee.y * PH + 0.08 * PH) + 4);
+  pctx.drawImage(video, 0, 0, PW, PH);
+  const d = pctx.getImageData(0, 0, PW, rowMax).data;
+  const g = G[2];
+  const n = PW * rowMax;
+  for (let i = 0, j = 0; i < n; i++, j += 4) g[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
+  framesSeen++;
+}
+
+// motion at pixel i for the middle frame (double difference removes ghosts)
+function mot(i) {
+  const a = G[2][i] - G[1][i], b = G[1][i] - G[0][i];
+  const da = a < 0 ? -a : a, db = b < 0 ? -b : b;
+  return da < db ? da : db;
+}
+
+function blobs(x0, y0, x1, y1, T, maxArea) {
+  x0 = Math.max(0, x0 | 0); y0 = Math.max(0, y0 | 0);
+  x1 = Math.min(PW - 1, x1 | 0); y1 = Math.min(rowMax - 1, y1 | 0);
+  const out = [];
+  if (x1 < x0 || y1 < y0) return out;
+  stampId++;
+  const id = stampId;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * PW + x;
+      if (stamp[i] === id) continue;
+      stamp[i] = id;
+      if (mot(i) <= T) continue;
+      let sp = 0; stack[sp++] = i;
+      let area = 0, sx = 0, sy = 0, sw = 0, mnx = x, mxx = x, mny = y, mxy = y, big = false;
+      while (sp) {
+        const k = stack[--sp];
+        const kx = k % PW, ky = (k / PW) | 0;
+        const w = mot(k);
+        area++; sx += kx * w; sy += ky * w; sw += w;
+        if (kx < mnx) mnx = kx; if (kx > mxx) mxx = kx; if (ky < mny) mny = ky; if (ky > mxy) mxy = ky;
+        if (area > maxArea * 4) { big = true; }
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = ky + dy; if (ny < y0 || ny > y1) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = kx + dx; if (nx < x0 || nx > x1) continue;
+            const n = ny * PW + nx;
+            if (stamp[n] === id) continue;
+            stamp[n] = id;
+            if (mot(n) > T) stack[sp++] = n;
+          }
+        }
+      }
+      if (!big && area <= maxArea) out.push({ x: sx / sw + 0.5, y: sy / sw + 0.5, area, w: mxx - mnx + 1, h: mxy - mny + 1 });
+    }
+  }
+  return out;
+}
+
+function shakeFraction(T) {
+  let c = 0, n = 0;
+  for (let y = 2; y < rowMax; y += 6) for (let x = 2; x < PW; x += 6) { n++; if (mot(y * PW + x) > T) c++; }
+  return n ? c / n : 0;
+}
+
+/* ---------------- Tee (ball) handling ---------------- */
+function ringMean(g, cx, cy, r) {
+  let s = 0, n = 0;
+  for (let a = 0; a < 16; a++) {
+    const x = Math.round(cx + r * Math.cos(a * Math.PI / 8)), y = Math.round(cy + r * Math.sin(a * Math.PI / 8));
+    if (x < 0 || y < 0 || x >= PW || y >= PH) continue;
+    s += g[y * PW + x]; n++;
+  }
+  return n ? s / n : 0;
+}
+function centerMean(g, cx, cy) {
+  let s = 0, n = 0;
+  cx = Math.round(cx); cy = Math.round(cy);
+  for (let y = cy - 1; y <= cy + 1; y++) for (let x = cx - 1; x <= cx + 1; x++) {
+    if (x < 0 || y < 0 || x >= PW || y >= PH) continue; s += g[y * PW + x]; n++;
+  }
+  return n ? s / n : 0;
+}
+function teeContrast(g, cx, cy, r) { return centerMean(g, cx, cy) - ringMean(g, cx, cy, r); }
+
+// After a tap: snap to the ball (brightest compact spot) near the tap
+function snapTee(nx, ny) {
+  if (framesSeen < 1) { tee = { x: nx, y: ny }; return; }
+  const g = G[2];
+  const px = nx * PW, py = ny * PH;
+  let best = -1e9, bx = px, by = py;
+  const win = Math.round(PW * 0.04);
+  for (let y = Math.round(py - win); y <= py + win; y++) for (let x = Math.round(px - win); x <= px + win; x++) {
+    if (x < 3 || y < 3 || x >= PW - 3 || y >= PH - 3) continue;
+    const dd = ((x - px) ** 2 + (y - py) ** 2) / (win * win);
+    const c = teeContrast(g, x, y, 5) - dd * 6;
+    if (c > best) { best = c; bx = x; by = y; }
+  }
+  if (best > 12) {
+    // estimate ball size: radius where contrast is best
+    let bestR = 5, bc = -1e9;
+    for (const r of [3, 4, 5, 7, 9, 12, 15]) { const c = teeContrast(g, bx, by, r); if (c > bc + 2) { bc = c; bestR = r; } }
+    teeR = bestR;
+    tee = { x: bx / PW, y: by / PH };
+    toast('공을 찾았어요');
+  } else {
+    teeR = 6;
+    tee = { x: nx, y: ny };
+  }
+  teeBase = 0; teeBaseN = 0; teeGoneT = -1e9; teeGoneRun = 0;
+  teeSet = true;
+  try { localStorage.setItem('tracer.tee.v1', JSON.stringify(tee)); } catch (e) {}
+}
+
+// keep learning what the ball looks like; detect when it vanishes
+function updateTee(t, T) {
+  const tx = tee.x * PW, ty = tee.y * PH;
+  const g1 = G[1];
+  const c = teeContrast(g1, tx, ty, teeR);
+  // local motion near tee
+  let m = 0;
+  const r = teeR + 2;
+  for (let y = Math.round(ty - r); y <= ty + r; y += 2) for (let x = Math.round(tx - r); x <= tx + r; x += 2) {
+    if (x < 0 || y < 0 || x >= PW || y >= rowMax) continue;
+    if (mot(y * PW + x) > T) m++;
+  }
+  const valid = Math.abs(teeBase) >= 10 && teeBaseN > 10;
+  if (valid && Math.abs(c) < Math.abs(teeBase) * 0.45) {
+    teeGoneRun++;
+    if (teeGoneRun >= 2 && teeGoneT < t - 1.5) teeGoneT = t;
+  } else {
+    teeGoneRun = 0;
+  }
+  if (m === 0 && (teeGoneRun === 0)) {
+    const a = teeBaseN < 20 ? 1 / (teeBaseN + 1) : 0.04;
+    teeBase += (c - teeBase) * a; teeBaseN++;
+  }
+}
+const teeCheckValid = () => S.tee && Math.abs(teeBase) >= 10 && teeBaseN > 10;
+
+/* ---------------- Math helpers ---------------- */
+function polyfit2(ts, vs) {
+  // least squares v = c0 + c1 t + c2 t^2
+  let n = ts.length, s0 = n, s1 = 0, s2 = 0, s3 = 0, s4 = 0, b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < n; i++) { const t = ts[i], t2 = t * t, v = vs[i]; s1 += t; s2 += t2; s3 += t2 * t; s4 += t2 * t2; b0 += v; b1 += v * t; b2 += v * t2; }
+  const M = [[s0, s1, s2, b0], [s1, s2, s3, b1], [s2, s3, s4, b2]];
+  for (let c = 0; c < 3; c++) {
+    let p = c; for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 4; k++) M[r][k] -= f * M[c][k]; }
+  }
+  return [M[0][3] / M[0][0], M[1][3] / M[1][1], M[2][3] / M[2][2]];
+}
+const ang = (ax, ay, bx, by) => {
+  const d = Math.hypot(ax, ay) * Math.hypot(bx, by); if (!d) return 180;
+  return Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / d))) * 180 / Math.PI;
+};
+
+/* ---------------- Detection & tracking ---------------- */
+function maxBlobArea() { return Math.max(260, teeR * teeR * 14); }
+
+function processArmed(t, T) {
+  const tx = tee.x * PW, ty = tee.y * PH;
+  const maxA = maxBlobArea();
+  const rect = [tx - 0.36 * PW, ty - 0.42 * PH, tx + 0.36 * PW, ty - 1];
+  const bl = blobs(rect[0], rect[1], rect[2], rect[3], T, maxA);
+  lastDebug = { rect, bl };
+  const used = new Set();
+  const tmid = GT[1];
+
+  // advance existing candidates
+  for (const c of cands) {
+    const n = c.pts.length, p = c.pts[n - 1];
+    let best = null, bs = 1e9;
+    for (let i = 0; i < bl.length; i++) {
+      if (used.has(i)) continue;
+      const b = bl[i];
+      const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy);
+      if (d < 1.2) continue;
+      if (Math.hypot(b.x - tx, b.y - ty) <= Math.hypot(p.x - tx, p.y - ty)) continue;
+      if (n === 1) {
+        const a = ang(p.x - tx, p.y - ty, dx, dy);
+        if (a > 24 || d > 0.3 * PH) continue;
+        const s = a + d * 0.05;
+        if (s < bs) { bs = s; best = i; }
+      } else {
+        const q = c.pts[n - 2];
+        const dtp = p.t - q.t, dtn = tmid - p.t;
+        const vx = (p.x - q.x) / dtp, vy = (p.y - q.y) / dtp;
+        const px = p.x + vx * dtn, py = p.y + vy * dtn;
+        const step = Math.hypot(vx, vy) * dtn;
+        const e = Math.hypot(b.x - px, b.y - py);
+        if (e > Math.max(4, step * 0.5)) continue;
+        if (ang(vx, vy, dx, dy) > 26) continue;
+        if (e < bs) { bs = e; best = i; }
+      }
+    }
+    if (best !== null) { used.add(best); c.pts.push({ x: bl[best].x, y: bl[best].y, t: tmid }); c.miss = 0; }
+    else c.miss++;
+    c.age++;
+  }
+  cands = cands.filter(c => c.miss < 2 && c.age < 14);
+
+  // new candidates
+  for (let i = 0; i < bl.length && cands.length < 14; i++) {
+    if (used.has(i)) continue;
+    const b = bl[i];
+    const dx = b.x - tx, dy = b.y - ty, d = Math.hypot(dx, dy);
+    if (d < teeR + 2 || d > 0.32 * PH) continue;
+    if (Math.abs(Math.atan2(dx, -dy)) * 180 / Math.PI > 62) continue;
+    cands.push({ pts: [{ x: b.x, y: b.y, t: tmid }], miss: 0, age: 0 });
+  }
+
+  // confirm
+  for (const c of cands) {
+    if (c.pts.length < 3) continue;
+    const a = c.pts[0], z = c.pts[c.pts.length - 1];
+    const speed = Math.hypot(z.x - a.x, z.y - a.y) / Math.max(1e-3, z.t - a.t);
+    if (speed < 0.22 * PW) continue;                         // too slow to be a ball
+    // line through points should pass near the tee
+    const ux = (z.x - a.x), uy = (z.y - a.y), ul = Math.hypot(ux, uy);
+    const off = Math.abs((tx - a.x) * uy - (ty - a.y) * ux) / ul;
+    if (off > Math.max(10, teeR * 3, 0.035 * PW)) continue;
+    if (teeCheckValid() && !(teeGoneT > a.t - 0.7 && teeGoneT < t + 0.05)) continue;
+    startTrack(c);
+    return;
+  }
+}
+
+function startTrack(c) {
+  const a = c.pts[0], b = c.pts[1];
+  const tx = tee.x * PW, ty = tee.y * PH;
+  const v = Math.hypot(b.x - a.x, b.y - a.y) / Math.max(1e-3, b.t - a.t);
+  const t0 = a.t - Math.hypot(a.x - tx, a.y - ty) / Math.max(1, v);
+  track = { pts: [{ x: tx, y: ty, t: t0 }, ...c.pts], last: c.pts[c.pts.length - 1].t, t0 };
+  if (!S.keep) traces = [];
+  const tr = { pts: [], ext: [], color: S.color, width: S.width, tEnd: 0, live: true };
+  traces.push(tr);
+  if (traces.length > 30) traces.shift();
+  track.trace = tr;
+  syncTrace();
+  cands = [];
+  setState('tracking');
+}
+
+function predict(t) {
+  const P = track.pts;
+  const n = P.length;
+  const use = P.slice(Math.max(1, n - 7)); // skip synthetic tee point when possible
+  if (use.length >= 4) {
+    const ts = use.map(p => p.t - track.t0);
+    const fx = polyfit2(ts, use.map(p => p.x)), fy = polyfit2(ts, use.map(p => p.y));
+    if (fx && fy) {
+      const tt = t - track.t0;
+      const lp = P[n - 1];
+      // anchor to last point to avoid fit bias
+      const ex = fx[0] + fx[1] * tt + fx[2] * tt * tt - (fx[0] + fx[1] * (lp.t - track.t0) + fx[2] * (lp.t - track.t0) ** 2);
+      const ey = fy[0] + fy[1] * tt + fy[2] * tt * tt - (fy[0] + fy[1] * (lp.t - track.t0) + fy[2] * (lp.t - track.t0) ** 2);
+      const vx = fx[1] + 2 * fx[2] * (lp.t - track.t0), vy = fy[1] + 2 * fy[2] * (lp.t - track.t0);
+      return { x: lp.x + ex, y: lp.y + ey, vx, vy };
+    }
+  }
+  const a = P[n - 1], b = P[n - 2];
+  const dt = a.t - b.t || 1 / 60;
+  const vx = (a.x - b.x) / dt, vy = (a.y - b.y) / dt;
+  return { x: a.x + vx * (t - a.t), y: a.y + vy * (t - a.t), vx, vy };
+}
+
+function processTracking(t, T) {
+  const tmid = GT[1];
+  const P = track.pts, lp = P[P.length - 1];
+  const pr = predict(tmid);
+  const dt = tmid - lp.t;
+  const speed = Math.hypot(pr.vx, pr.vy);
+  const missN = Math.max(0, Math.round(dt * 60) - 1);
+  let gate = Math.max(5, 0.3 * speed * dt + 3) * (1 + 0.35 * missN);
+  gate = Math.min(gate, 0.16 * PW);
+  const Tt = Math.max(6, Math.round(T * 0.8));
+  const bl = blobs(pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate, Tt, maxBlobArea() * 1.5);
+  lastDebug = { rect: [pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate], bl, pred: pr };
+  let best = null, bs = 1e9;
+  for (const b of bl) {
+    const e = Math.hypot(b.x - pr.x, b.y - pr.y);
+    if (e > gate) continue;
+    const mx = b.x - lp.x, my = b.y - lp.y;
+    if ((mx * pr.vx + my * pr.vy) < -0.2 * Math.hypot(mx, my) * speed) continue; // going backwards
+    if (Math.hypot(mx, my) < 0.4) continue;
+    if (e < bs) { bs = e; best = b; }
+  }
+  if (best) {
+    P.push({ x: best.x, y: best.y, t: tmid });
+    track.last = tmid;
+    syncTrace();
+  }
+  const lost = tmid - track.last > 0.32;
+  const out = pr.x < -4 || pr.x > PW + 4 || pr.y < -4 || pr.y > rowMax + 4;
+  const tooLong = tmid - track.t0 > 9;
+  if (lost || out || tooLong) finishTrack();
+}
+
+function smoothPts(P) {
+  if (P.length < 4) return P.map(p => [p.x, p.y]);
+  const out = [[P[0].x, P[0].y]];
+  for (let i = 1; i < P.length - 1; i++) {
+    const a = P[i - 1], b = P[i], c = P[i + 1];
+    out.push([(a.x + 2 * b.x + c.x) / 4, (a.y + 2 * b.y + c.y) / 4]);
+  }
+  out.push([P[P.length - 1].x, P[P.length - 1].y]);
+  return out;
+}
+
+function syncTrace() {
+  track.trace.pts = smoothPts(track.pts).map(([x, y]) => [x / PW, y / PH]);
+}
+
+function buildExtension() {
+  const P = track.pts;
+  if (P.length < 5) return [];
+  const ts = P.map(p => p.t - track.t0);
+  const fx = polyfit2(ts, P.map(p => p.x)), fy = polyfit2(ts, P.map(p => p.y));
+  if (!fx || !fy) return [];
+  const lp = P[P.length - 1], tL = lp.t - track.t0;
+  let vx = fx[1] + 2 * fx[2] * tL, vy = fy[1] + 2 * fy[2] * tL;
+  let ay = 2 * fy[2], ax = 2 * fx[2];
+  const startY = P[0].y;
+  let apexY = Math.min(...P.map(p => p.y));
+  if (vy < 0) {
+    // still rising: need gravity-like deceleration so that it peaks
+    const tApexFit = ay > 0 ? -vy / ay : Infinity;
+    const lo = 0.5, hi = 3.2;
+    if (!(tApexFit >= lo && tApexFit <= hi)) {
+      const tA = Math.min(hi, Math.max(lo, tL * 0.9 + 0.6));
+      ay = -vy / tA;
+    }
+  } else if (ay <= 0) {
+    ay = Math.max(30, Math.abs(vy));
+  }
+  const axMax = Math.abs(ay) * 0.45;
+  ax = Math.max(-axMax, Math.min(axMax, ax));
+  const ext = [];
+  let x = lp.x, y = lp.y, passedApex = vy >= 0;
+  const dt = 1 / 60;
+  for (let k = 0; k < 6 * 60; k++) {
+    // horizontal speed bleeds off slowly (drag), vertical follows gravity-like curve
+    vx += ax * dt; vy += ay * dt;
+    vx *= 0.995;
+    x += vx * dt; y += vy * dt;
+    if (!passedApex && vy >= 0) { passedApex = true; apexY = Math.min(apexY, y); }
+    if (passedApex) {
+      const landY = apexY + (S.drop / 100) * (startY - apexY);
+      if (y >= landY) break;
+    }
+    if (x < -PW * 0.05 || x > PW * 1.05 || y < -PH * 0.05) break;
+    ext.push([x / PW, y / PH]);
+  }
+  return ext;
+}
+
+function finishTrack() {
+  const tr = track.trace;
+  tr.live = false;
+  tr.ext = S.auto ? buildExtension() : [];
+  tr.tEnd = performance.now();
+  // discard junk (very short) tracks
+  if (track.pts.length < 4) traces.splice(traces.indexOf(tr), 1);
+  track = null;
+  setState('done');
+}
+
+/* ---------------- Rendering ---------------- */
+let cw = 0, ch = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cw = Math.round(innerWidth * dpr / 2) * 2; ch = Math.round(innerHeight * dpr / 2) * 2;
+  for (const c of [view, ui]) { c.width = cw; c.height = ch; }
+}
+addEventListener('resize', resize);
+resize();
+
+function coverMap() {
+  const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
+  const s = Math.max(cw / vw, ch / vh);
+  return { s, ox: (cw - vw * s) / 2, oy: (ch - vh * s) / 2, w: vw * s, h: vh * s };
+}
+const toScreen = (m, nx, ny) => [m.ox + nx * m.w, m.oy + ny * m.h];
+
+function drawTrace(ctx, m, tr, now) {
+  let pts = tr.pts;
+  if (tr.ext.length) {
+    const k = Math.min(1, (now - tr.tEnd) / 700);
+    const e = Math.floor(tr.ext.length * (1 - (1 - k) ** 2));
+    pts = pts.concat(tr.ext.slice(0, e));
+  }
+  if (pts.length < 2) return;
+  // dense smooth path (Catmull-Rom)
+  const sp = pts.map(p => toScreen(m, p[0], p[1]));
+  const dense = [];
+  for (let i = 0; i < sp.length - 1; i++) {
+    const p0 = sp[Math.max(0, i - 1)], p1 = sp[i], p2 = sp[i + 1], p3 = sp[Math.min(sp.length - 1, i + 2)];
+    const segs = Math.max(1, Math.min(8, Math.round(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / 6)));
+    for (let s = 0; s < segs; s++) {
+      const t = s / segs, t2 = t * t, t3 = t2 * t;
+      dense.push([
+        0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+        0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+      ]);
+    }
+  }
+  dense.push(sp[sp.length - 1]);
+  // total length for taper
+  let L = 0; const acc = [0];
+  for (let i = 1; i < dense.length; i++) { L += Math.hypot(dense[i][0] - dense[i - 1][0], dense[i][1] - dense[i - 1][1]); acc.push(L); }
+  const W = tr.width * dpr;
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const pass of [0, 1]) {
+    ctx.strokeStyle = tr.color;
+    ctx.globalAlpha = pass === 0 ? 0.28 : 0.95;
+    for (let i = 1; i < dense.length; i++) {
+      const f = 1 - 0.62 * (acc[i] / (L || 1));
+      ctx.lineWidth = (pass === 0 ? W * 2.4 : W) * f;
+      ctx.beginPath(); ctx.moveTo(dense[i - 1][0], dense[i - 1][1]); ctx.lineTo(dense[i][0], dense[i][1]); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function render() {
+  const now = performance.now();
+  const m = coverMap();
+  vctx.fillStyle = '#000'; vctx.fillRect(0, 0, cw, ch);
+  if (video.readyState >= 2) vctx.drawImage(video, m.ox, m.oy, m.w, m.h);
+  for (const tr of traces) drawTrace(vctx, m, tr, now);
+
+  uctx.clearRect(0, 0, cw, ch);
+  // reticle
+  if (state !== 'tracking') {
+    const [x, y] = toScreen(m, tee.x, tee.y);
+    const r = Math.max(16 * dpr, teeR * m.w / PW * 1.6);
+    const col = state === 'paused' ? 'rgba(255,255,255,.45)' : (state === 'armed' ? 'rgba(52,199,89,.95)' : 'rgba(255,255,255,.85)');
+    uctx.save();
+    uctx.strokeStyle = col; uctx.lineWidth = 2 * dpr;
+    uctx.beginPath(); uctx.arc(x, y, r, 0, Math.PI * 2); uctx.stroke();
+    uctx.beginPath();
+    uctx.moveTo(x - r - 8 * dpr, y); uctx.lineTo(x - r + 5 * dpr, y);
+    uctx.moveTo(x + r - 5 * dpr, y); uctx.lineTo(x + r + 8 * dpr, y);
+    uctx.moveTo(x, y - r - 8 * dpr); uctx.lineTo(x, y - r + 5 * dpr);
+    uctx.stroke();
+    if (!teeSet) {
+      uctx.font = `600 ${14 * dpr}px -apple-system,system-ui`; uctx.textAlign = 'center';
+      uctx.fillStyle = 'rgba(0,0,0,.55)';
+      const tw = uctx.measureText('공을 탭하세요').width + 20 * dpr;
+      uctx.fillRect(x - tw / 2, y + r + 12 * dpr, tw, 26 * dpr);
+      uctx.fillStyle = '#fff'; uctx.fillText('공을 탭하세요', x, y + r + 30 * dpr);
+    }
+    uctx.restore();
+  }
+  if (S.debug && lastDebug && PH) {
+    const sx = m.w / PW, sy = m.h / PH;
+    uctx.save();
+    uctx.strokeStyle = 'rgba(48,213,255,.8)'; uctx.lineWidth = 1 * dpr;
+    const r = lastDebug.rect;
+    uctx.strokeRect(m.ox + r[0] * sx, m.oy + r[1] * sy, (r[2] - r[0]) * sx, (r[3] - r[1]) * sy);
+    uctx.fillStyle = 'rgba(255,214,10,.9)';
+    for (const b of lastDebug.bl) uctx.fillRect(m.ox + b.x * sx - 3 * dpr, m.oy + b.y * sy - 3 * dpr, 6 * dpr, 6 * dpr);
+    uctx.strokeStyle = 'rgba(255,255,255,.7)';
+    for (const c of cands) {
+      uctx.beginPath();
+      c.pts.forEach((p, i) => { const X = m.ox + p.x * sx, Y = m.oy + p.y * sy; i ? uctx.lineTo(X, Y) : uctx.moveTo(X, Y); });
+      uctx.stroke();
+    }
+    uctx.fillStyle = '#fff'; uctx.font = `${11 * dpr}px ui-monospace,monospace`; uctx.textAlign = 'left';
+    uctx.fillText(`fps ${fps.toFixed(0)}  T ${thresh()}  tee ${teeBase.toFixed(0)}${teeCheckValid() ? '' : '(off)'}  ${state}`, 12 * dpr, ch - 130 * dpr);
+    uctx.restore();
+  }
+}
+
+/* ---------------- Main loop ---------------- */
+let fps = 0, lastFrameT = 0;
+const useRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+
+function onFrame(nowMs, meta) {
+  const t = (meta && meta.mediaTime != null) ? meta.mediaTime : nowMs / 1000;
+  if (lastFrameT) fps = fps * 0.9 + 0.1 / Math.max(1e-3, (t - lastFrameT));
+  lastFrameT = t;
+  if (video.videoWidth && PH !== Math.round(PW * video.videoHeight / video.videoWidth)) allocBuffers();
+  if (video.videoWidth && state !== 'off') {
+    grabFrame(t);
+    if (framesSeen >= 3 && state !== 'paused') {
+      const T = thresh();
+      const shake = shakeFraction(T);
+      if (shake > 0.12) {
+        shakeUntil = performance.now() + 800;
+        if (state === 'armed') cands = [];
+      } else {
+        updateTee(t, T);
+        if (state === 'armed') processArmed(t, T);
+        else if (state === 'tracking') processTracking(t, T);
+      }
+      if (state === 'done' && performance.now() - stateT > 1300) setState('armed');
+    }
+  }
+  render();
+  updateStatus();
+  schedule();
+}
+function schedule() {
+  if (useRVFC) video.requestVideoFrameCallback(onFrame);
+  else requestAnimationFrame(n => onFrame(n, null));
+}
+
+/* ---------------- Status / toast ---------------- */
+let toastTimer;
+function toast(msg) {
+  const el = $('toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+let lastStatus = '';
+function updateStatus() {
+  let txt = '대기', cls = '';
+  const shaky = performance.now() < shakeUntil;
+  if (state === 'armed') { txt = shaky ? '흔들림 감지 · 폰을 고정하세요' : (teeSet ? '준비됨 · 샷을 치세요' : '공을 탭해서 위치 지정'); cls = shaky ? 'warn' : 'ok'; }
+  else if (state === 'tracking') { txt = '추적 중…'; cls = 'rec'; }
+  else if (state === 'done') { txt = '궤적 완료'; cls = 'ok'; }
+  else if (state === 'paused') { txt = '일시정지'; cls = ''; }
+  const key = txt + cls;
+  if (key === lastStatus) return;
+  lastStatus = key;
+  $('statusText').textContent = txt;
+  $('dot').className = 'dot ' + cls;
+}
+
+/* ---------------- Camera ---------------- */
+let stream = null, wakeLock = null;
+async function startCamera() {
+  $('err').textContent = '';
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $('err').textContent = '이 브라우저에서는 카메라를 쓸 수 없어요. https 주소로 Safari에서 열어주세요.';
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } }
+    });
+  } catch (e) {
+    $('err').textContent = e && e.name === 'NotAllowedError'
+      ? '카메라 권한이 거부됐어요. 설정 › Safari › 카메라에서 허용해 주세요.'
+      : '카메라를 시작하지 못했어요: ' + (e && e.message || e);
+    return;
+  }
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  await new Promise(r => video.videoWidth ? r() : video.addEventListener('loadedmetadata', r, { once: true }));
+  allocBuffers();
+  $('start').style.display = 'none';
+  setupZoom();
+  requestWake();
+  setState('armed');
+  schedule();
+}
+async function requestWake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && stream) requestWake(); });
+
+function setupZoom() {
+  const track = stream && stream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  if (caps && caps.zoom) {
+    const z = $('sZoom');
+    z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, 5); z.step = caps.zoom.step || 0.1;
+    z.value = Math.min(Math.max(S.zoom, caps.zoom.min), z.max);
+    $('vZoom').textContent = (+z.value).toFixed(1) + '×';
+    $('zoomRow').style.display = '';
+    track.applyConstraints({ advanced: [{ zoom: +z.value }] }).catch(() => {});
+    z.oninput = () => {
+      S.zoom = +z.value; saveSettings(); $('vZoom').textContent = S.zoom.toFixed(1) + '×';
+      track.applyConstraints({ advanced: [{ zoom: S.zoom }] }).catch(() => {});
+      framesSeen = 0;
+    };
+  }
+}
+
+/* ---------------- Input ---------------- */
+ui.addEventListener('pointerdown', e => {
+  if (state === 'off' || state === 'tracking') return;
+  const m = coverMap();
+  const nx = (e.clientX * dpr - m.ox) / m.w, ny = (e.clientY * dpr - m.oy) / m.h;
+  if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+  snapTee(nx, ny);
+  if (state !== 'paused') setState('armed');
+});
+
+$('btnStart').onclick = startCamera;
+$('btnClear').onclick = () => { traces = []; if (state === 'tracking') { track = null; setState('armed'); } toast('궤적을 지웠어요'); };
+$('btnArm').onclick = () => {
+  if (state === 'off') return;
+  const paused = state === 'paused';
+  if (paused) setState('armed'); else { track = null; setState('paused'); }
+  $('icoPause').style.display = paused ? '' : 'none';
+  $('icoPlay').style.display = paused ? 'none' : '';
+};
+
+/* ---------------- Settings UI ---------------- */
+function bindSettings() {
+  const sens = $('sSens'), drop = $('sDrop'), width = $('sWidth');
+  sens.value = S.sens; drop.value = S.drop; width.value = S.width;
+  const show = () => { $('vSens').textContent = S.sens; $('vDrop').textContent = S.drop + '%'; $('vWidth').textContent = S.width; };
+  show();
+  sens.oninput = () => { S.sens = +sens.value; show(); saveSettings(); };
+  drop.oninput = () => { S.drop = +drop.value; show(); saveSettings(); };
+  width.oninput = () => { S.width = +width.value; show(); saveSettings(); for (const t of traces) t.width = S.width; };
+  for (const [id, key] of [['sAuto', 'auto'], ['sTee', 'tee'], ['sKeep', 'keep'], ['sDebug', 'debug']]) {
+    const el = $(id); el.checked = !!S[key];
+    el.onchange = () => { S[key] = el.checked; saveSettings(); };
+  }
+  const chips = $('chips');
+  COLORS.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (c === S.color ? ' sel' : ''); b.style.background = c; b.setAttribute('aria-label', c);
+    b.onclick = () => {
+      S.color = c; saveSettings();
+      chips.querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === b));
+      for (const t of traces) t.color = c;
+    };
+    chips.appendChild(b);
+  });
+}
+bindSettings();
+$('btnSettings').onclick = () => $('sheetWrap').classList.add('open');
+$('sheetBg').onclick = () => $('sheetWrap').classList.remove('open');
+$('btnDemo').onclick = () => {
+  $('sheetWrap').classList.remove('open');
+  // synthetic shot from the current tee, to preview the look
+  const tx = tee.x * PW, ty = tee.y * PH;
+  const pts = []; const t0 = 0;
+  for (let i = 0; i <= 24; i++) { const t = i / 60; pts.push({ x: tx + 22 * t, y: ty - 520 * t + 140 * t * t, t }); }
+  track = { pts, t0, last: pts[pts.length - 1].t };
+  if (!S.keep) traces = [];
+  const tr = { pts: [], ext: [], color: S.color, width: S.width, tEnd: 0, live: true };
+  traces.push(tr); track.trace = tr; syncTrace(); finishTrack();
+};
+
+/* ---------------- Recording ---------------- */
+let rec = null, recChunks = [], recStart = 0, recTimer = null, recBlob = null, recType = '';
+function pickMime() {
+  if (!window.MediaRecorder) return null;
+  for (const t of ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']) {
+    try { if (MediaRecorder.isTypeSupported(t)) return t; } catch (e) {}
+  }
+  return '';
+}
+$('btnRec').onclick = () => {
+  if (state === 'off') return;
+  if (rec) { rec.stop(); return; }
+  const mime = pickMime();
+  if (mime === null || !view.captureStream) { toast('이 기기에서는 녹화를 지원하지 않아요'); return; }
+  const cs = view.captureStream(30);
+  try { rec = new MediaRecorder(cs, mime ? { mimeType: mime, videoBitsPerSecond: 8e6 } : undefined); }
+  catch (e) { rec = new MediaRecorder(cs); }
+  recType = rec.mimeType || mime || 'video/mp4';
+  recChunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+  rec.onstop = () => {
+    clearInterval(recTimer);
+    $('btnRec').classList.remove('on'); $('recTime').style.display = 'none';
+    recBlob = new Blob(recChunks, { type: recType });
+    rec = null;
+    const v = $('resVideo'); v.src = URL.createObjectURL(recBlob); v.play().catch(() => {});
+    $('result').classList.add('open');
+  };
+  rec.start(500);
+  recStart = performance.now();
+  $('btnRec').classList.add('on'); $('recTime').style.display = 'block';
+  recTimer = setInterval(() => {
+    const s = Math.floor((performance.now() - recStart) / 1000);
+    $('recTime').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }, 250);
+};
+$('btnResClose').onclick = () => {
+  const v = $('resVideo'); v.pause(); URL.revokeObjectURL(v.src); v.removeAttribute('src');
+  $('result').classList.remove('open');
+};
+$('btnResSave').onclick = async () => {
+  if (!recBlob) return;
+  const ext = recType.includes('mp4') ? 'mp4' : 'webm';
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const name = `shot-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
+  const file = new File([recBlob], name, { type: recType.split(';')[0] });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+};
+
+// debug/test hook
+window.__tracer = { get state() { return state; }, get traces() { return traces; }, get cands() { return cands; }, get tee() { return tee; },
+  get teeBase() { return teeBase; }, get fps() { return fps; }, snapTee, S };
+})();
+</script>
+</body>
+</html>
