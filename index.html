@@ -161,8 +161,8 @@
   <ol>
     <li>공 뒤쪽 2~4m에서 타깃 방향을 향해 폰을 세워 두세요. 삼각대나 거치대로 고정해야 정확해요.</li>
     <li>화면에서 공을 탭하세요. 원이 공에 붙습니다.</li>
-    <li>치면 자동으로 선이 그려지고, 앱이 켜져 있는 동안 샷마다 선이 계속 쌓입니다.</li>
-    <li>가운데 버튼으로 궤적이 들어간 영상을 녹화해 사진 앱에 저장할 수 있어요.</li>
+    <li>가운데 녹화 버튼을 누르면 추적이 시작돼요. 그 전에는 선을 그리지 않아요.</li>
+    <li>치면 자동으로 선이 그려지고, 녹화를 멈추면 영상을 사진 앱에 저장할 수 있어요.</li>
     <li>이미 찍어 둔 영상은 아래 '사진첩 영상으로 만들기'로 불러와 궤적 영상을 만들 수 있어요.</li>
   </ol>
   <div class="grow"></div>
@@ -203,6 +203,7 @@
       <label class="sw"><input type="checkbox" id="sKeep"><span></span></label></div>
     <div class="row"><div class="lbl">선 색상</div><div class="chips" id="chips"></div></div>
     <div class="row"><div class="lbl">선 굵기</div><input type="range" id="sWidth" min="2" max="12" step="1"><span class="val" id="vWidth"></span></div>
+    <div class="row"><div class="lbl">선 불투명도</div><input type="range" id="sOpacity" min="10" max="100" step="5"><span class="val" id="vOpacity"></span></div>
     <div class="row" id="zoomRow" style="display:none"><div class="lbl">줌</div><input type="range" id="sZoom" min="1" max="3" step="0.1"><span class="val" id="vZoom"></span></div>
     <div class="row"><div><div class="lbl">감지 화면 보기</div><div class="hint">움직임 감지 영역을 표시해요 (조정용)</div></div>
       <label class="sw"><input type="checkbox" id="sDebug"><span></span></label></div>
@@ -228,7 +229,7 @@ If you want to offset all timestamps of a track such that the first one is zero,
 'use strict';
 
 /* ---------------- Settings ---------------- */
-const DEFAULTS = { sens: 6, auto: true, drop: 0, descent: true, wx: false, wind: 0, windDir: 'head', temp: 20, tee: true, keep: true, color: '#e8321e', width: 5, debug: false, zoom: 1 };
+const DEFAULTS = { sens: 6, auto: true, drop: 0, descent: true, wx: false, wind: 0, windDir: 'head', temp: 20, tee: true, keep: true, color: '#e8321e', width: 5, opacity: 40, debug: false, zoom: 1 };
 const COLORS = ['#e8321e', '#ffd60a', '#ffffff', '#30d5ff', '#34c759'];
 let S = { ...DEFAULTS };
 try { Object.assign(S, JSON.parse(localStorage.getItem('tracer.settings.v2') || '{}')); } catch (e) {}
@@ -269,6 +270,7 @@ let tee = null;               // {x,y} in normalized video coords
 let teeR = 6;                 // ring radius in proc px
 let teeSet = false;
 let teeBase = 0, teeBaseN = 0, teeGoneT = -1e9, teeGoneRun = 0, teeAbsentT = null, teeFound = false;
+let teeReacq = null;          // candidate new spot for the ball after the camera drifted while it was hidden
 let state = 'off';            // off | armed | tracking | done | paused
 let stateT = 0;
 let cands = [];
@@ -285,6 +287,8 @@ if (!tee) tee = { x: 0.5, y: 0.8 };
 function setState(s) {
   state = s; stateT = performance.now();
   if (s === 'armed') { cands = []; track = null; }
+  const ip = document.getElementById('icoPause'), iy = document.getElementById('icoPlay');
+  if (ip && iy) { ip.style.display = s === 'paused' ? 'none' : ''; iy.style.display = s === 'paused' ? '' : 'none'; }
   updateStatus();
 }
 
@@ -502,7 +506,7 @@ function snapTee(nx, ny) {
     teeFound = false;
     tee = { x: nx, y: ny };
   }
-  teeBase = 0; teeBaseN = 0; teeGoneT = -1e9; teeGoneRun = 0; teeAbsentT = null;
+  teeBase = 0; teeBaseN = 0; teeGoneT = -1e9; teeGoneRun = 0; teeAbsentT = null; teeReacq = null;
   if (teeFound) {
     // what the ball looks like right now (the user just tapped it) is the reference
     teeBase = teeRatio(g, tee.x * PW, tee.y * PH, teeR) - 1;
@@ -541,6 +545,27 @@ function updateTee(t) {
     if (c2 >= teeBase * 0.8) { c = c2; bx = bx2; by = by2; tx = bx; ty = by; tee = { x: bx / PW, y: by / PH }; }
   }
   const present = !valid || c >= teeBase * 0.45;
+  if (!present && valid && teeFound && state !== 'tracking' && teeAbsentT !== null && t - teeAbsentT >= 0.6 && m === 0) {
+    // the ball was hidden (club at address) while the phone drifted: it is still on the tee, just elsewhere in the frame.
+    // look wider, and only move there once the same spot looks like the ball for several frames in a row.
+    let c3 = -1e9, bx3 = ix, by3 = iy;
+    const W = 26;
+    for (let dy = -W; dy <= W; dy++) for (let dx = -W; dx <= W; dx++) {
+      const x = ix + dx, y = iy + dy;
+      if (x < teeR + 2 || y < teeR + 2 || x >= PW - teeR - 2 || y >= rowMax - teeR - 2) continue;
+      const v = teeRatio(G[1], x, y, teeR) - 1 - 0.0004 * (dx * dx + dy * dy);
+      if (v > c3) { c3 = v; bx3 = x; by3 = y; }
+    }
+    if (c3 >= teeBase * 0.8) {
+      if (teeReacq && Math.abs(teeReacq.x - bx3) <= 2 && Math.abs(teeReacq.y - by3) <= 2) teeReacq.n++;
+      else teeReacq = { x: bx3, y: by3, n: 1 };
+      if (teeReacq.n >= 6) {
+        tee = { x: bx3 / PW, y: by3 / PH }; teeAbsentT = null; teeReacq = null;
+        EV.push({ t, type: 'teeReacq', x: tee.x, y: tee.y });
+        return;
+      }
+    } else teeReacq = null;
+  }
   if (!present) {
     if (teeAbsentT === null) teeAbsentT = t;
     // the ball must stay gone for a while: a club or shadow passing over it doesn't count
@@ -560,6 +585,9 @@ function updateTee(t) {
 }
 const teeBaseValid = () => teeBase >= 0.12 && teeBaseN > 10;
 const teeCheckValid = () => S.tee && teeFound;
+// Live camera: without a ball that was tapped and found, nothing tells a shot from a person walking
+// through the picture, so no line is started until then.
+const needBall = () => !!stream && S.tee && !teeFound;
 
 /* ---------------- Math helpers ---------------- */
 function polyfit2(ts, vs) {
@@ -599,6 +627,7 @@ function processArmed(t, T, allowStart = true, confirmOnly = false) {
   const lone = bl.map((b, i) => { let m = 1e9; for (let j = 0; j < bl.length; j++) if (j !== i) m = Math.min(m, Math.hypot(bl[j].x - b.x, bl[j].y - b.y)); return m > 14; });
   const pairs = [];
   cands.forEach((c, ci) => {
+    if (c.miss >= 3) return;          // lost sight of it: kept a little longer only so it can still be confirmed
     const n = c.pts.length, p = c.pts[n - 1];
     for (let i = 0; i < bl.length; i++) {
       const b = bl[i];
@@ -613,12 +642,18 @@ function processArmed(t, T, allowStart = true, confirmOnly = false) {
         const q = c.pts[n - 2];
         const dtp = p.t - q.t, dtn = tmid - p.t;
         const vx = (p.x - q.x) / dtp, vy = (p.y - q.y) / dtp;
-        const px = p.x + vx * dtn, py = p.y + vy * dtn;
         const step = Math.hypot(vx, vy) * dtn;
-        const e = Math.hypot(b.x - px, b.y - py), gate = Math.max(4, step * 0.6);
+        // seen from behind, a launched ball slows down a lot on screen (it flies away from the camera):
+        // anywhere along the straight-line guess (from almost no move up to a bit past it) fits,
+        // and a shorter step is the likelier one
+        const ux = vx * dtn, uy = vy * dtn, L2 = ux * ux + uy * uy || 1;
+        const u = (dx * ux + dy * uy) / L2;
+        if (u < 0.05 || u > 1.3) continue;
+        const uc = Math.min(1, u);
+        const e = Math.hypot(dx - uc * ux, dy - uc * uy), gate = Math.max(4, step * 0.35);
         if (e > gate) continue;
         if (ang(vx, vy, dx, dy) > (n >= 3 ? 18 : 30)) continue;   // a ball's path bends slowly
-        pairs.push([e / gate - 0.02 * Math.min(n, 10), ci, i]);
+        pairs.push([e / gate + 0.3 * u - 0.02 * Math.min(n, 10), ci, i]);
       }
     }
   });
@@ -630,7 +665,10 @@ function processArmed(t, T, allowStart = true, confirmOnly = false) {
     cands[ci].pts.push({ x: bl[i].x, y: bl[i].y, t: tmid, lone: lone[i] }); cands[ci].miss = 0;
   }
   cands.forEach((c, ci) => { if (!took.has(ci)) c.miss++; c.age++; });
-  cands = cands.filter(c => c.miss < 3 && tmid - c.pts[0].t < 1.0 && (c.pts.length >= 3 || c.age < 6));
+  // A good candidate that just went out of sight (a faint ball at a low frame rate) stays a while, because
+  // whether the ball really left the tee is only known ~0.3 s after impact.
+  cands = cands.filter(c => (c.miss < 3 || (c.pts.length >= 3 && tmid - c.pts[c.pts.length - 1].t < 0.45)) &&
+                            tmid - c.pts[0].t < 1.0 && (c.pts.length >= 3 || c.age < 6));
 
   // new candidates
   // closest to the ball first, so background noise can't crowd out a real launch
@@ -649,6 +687,7 @@ function processArmed(t, T, allowStart = true, confirmOnly = false) {
   }
 
   // confirm
+  if (needBall()) return;
   let pick = null;
   for (const c of cands) {
     if (c.pts.length < 3) continue;
@@ -673,7 +712,11 @@ function processArmed(t, T, allowStart = true, confirmOnly = false) {
     // several may qualify at once (ball + club/hands): take the one whose line runs truest from the ball
     // a ball soon flies alone in the sky; hands and club stay inside the moving crowd of the swing
     const crowd = c.pts.filter(p => !p.lone).length / c.pts.length;
-    const score = off / offMax - 0.05 * Math.min(c.pts.length, 8) + 0.6 * crowd;
+    // something already moving before the tee went empty is most likely the club coming down:
+    // give the real ball a moment to show up first, and prefer it when it does
+    const pre = teeCheckValid() && a.t < teeGoneT - 0.02;
+    if (pre && GT[1] - teeGoneT < 0.3) continue;
+    const score = off / offMax - 0.05 * Math.min(c.pts.length, 8) + 0.6 * crowd + (pre ? 1 : 0);
     if (!pick || score < pick.score) pick = { c, score };
   }
   if (pick) startTrack(pick.c);
@@ -729,8 +772,19 @@ function processTracking(t, T) {
   const missN = Math.max(0, Math.round(dt * 60) - 1);
   let gate = Math.max(5, 0.3 * speed * dt + 3) * (1 + 0.35 * missN);
   gate = Math.min(gate, 0.16 * PW);
-  const hi = hiResBlobs(pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate);
-  const lo = blobs(pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate, 1, maxBlobArea() * 1.5);
+  // Early in the flight the ball slows down fast on screen (it is flying away from the camera), so
+  // a straight-line guess overshoots, worst after a few missed frames (low frame rate / faint ball).
+  // Then look along the whole stretch between the last sighting and the guess.
+  const early = P.length < 8 && Math.hypot(pr.x - lp.x, pr.y - lp.y) > gate;
+  const segD = b => {
+    const ux = pr.x - lp.x, uy = pr.y - lp.y, L2 = ux * ux + uy * uy;
+    const u = L2 ? Math.max(0, Math.min(1, ((b.x - lp.x) * ux + (b.y - lp.y) * uy) / L2)) : 0;
+    return Math.hypot(b.x - (lp.x + u * ux), b.y - (lp.y + u * uy));
+  };
+  const rx0 = Math.min(pr.x, early ? lp.x : pr.x) - gate, rx1 = Math.max(pr.x, early ? lp.x : pr.x) + gate;
+  const ry0 = Math.min(pr.y, early ? lp.y : pr.y) - gate, ry1 = Math.max(pr.y, early ? lp.y : pr.y) + gate;
+  const hi = early ? null : hiResBlobs(pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate);
+  const lo = blobs(rx0, ry0, rx1, ry1, 1, maxBlobArea() * 1.5);
   // prefer the sharp full-resolution view; fall back to the shrunk frame
   const bl = hi !== null ? hi : lo;   // when the sharp view is available, trust it alone (big things like a club head are left out there)
   lastDebug = { rect: [pr.x - gate, pr.y - gate, pr.x + gate, pr.y + gate], bl, pred: pr };
@@ -743,8 +797,9 @@ function processTracking(t, T) {
   }
   let best = null, bs = 1e9;
   for (const b of bl) {
-    const e = Math.hypot(b.x - pr.x, b.y - pr.y);
-    if (e > gate) continue;
+    const e0 = early ? segD(b) : Math.hypot(b.x - pr.x, b.y - pr.y);
+    if (e0 > gate) continue;
+    const e = early ? e0 + 0.15 * Math.hypot(b.x - lp.x, b.y - lp.y) : e0;
     const mx = b.x - lp.x, my = b.y - lp.y;
     if ((mx * pr.vx + my * pr.vy) < -0.2 * Math.hypot(mx, my) * speed) continue; // going backwards
     if (Math.hypot(mx, my) < 0.4) continue;
@@ -775,7 +830,8 @@ function processTracking(t, T) {
     syncTrace();
   }
   const lost = tmid - track.last > 0.32;
-  const out = pr.x < -4 || pr.x > PW + 4 || pr.y < -4 || pr.y > rowMax + 4;
+  const out = early ? (lp.x < 3 || lp.x > PW - 3 || lp.y < 3 || pr.y > rowMax + 4)
+                    : (pr.x < -4 || pr.x > PW + 4 || pr.y < -4 || pr.y > rowMax + 4);
   const tooLong = tmid - track.t0 > 9;
   // ball has landed / stopped: hardly any progress over the last 0.6 s
   let stalled = false;
@@ -792,19 +848,19 @@ function processTracking(t, T) {
   // If the path turns around and drops soon after launch, it wasn't the ball: remove it.
   const launchT = teeGoneT > track.t0 - 1 ? teeGoneT : track.t0;
   const yNow = P[P.length - 1].y, yTee = P[0].y;
-  if (tmid - launchT < 1.0 && yNow - minY > Math.max(8, 0.25 * (yTee - minY))) { cancelTrack(); return; }
+  if (tmid - launchT < 1.0 && yNow - minY > Math.max(8, 0.25 * (yTee - minY))) { cancelTrack('drop'); return; }
   // right after launch a ball climbs; a club sweeping sideways moves fast and flat
   if (best && tmid - launchT < 0.7 && P.length >= 3) {
     const q = P[P.length - 2], z = P[P.length - 1], st = Math.max(1e-3, z.t - q.t);
     const sx = (z.x - q.x) / st, sy = (z.y - q.y) / st;
-    if (Math.hypot(sx, sy) > 0.5 * PW && Math.abs(Math.atan2(sx, -sy)) * 180 / Math.PI > 60) { cancelTrack(); return; }
+    if (Math.hypot(sx, sy) > 0.5 * PW && Math.abs(Math.atan2(sx, -sy)) * 180 / Math.PI > 60) { cancelTrack('sideways'); return; }
   }
   // drifting on nothing: hardly moved for a whole second
   if (!stalled && tmid - track.t0 > 1.5) {
     const old = P.filter(p => p.t >= tmid - 1.0);
     if (old.length >= 2 && Math.hypot(old[old.length - 1].x - old[0].x, old[old.length - 1].y - old[0].y) < 4) stalled = true;
   }
-  if (lost || out || tooLong || stalled) { if (P.length < 6) cancelTrack(); else finishTrack(); }   // too short to trust: keep looking
+  if (lost || out || tooLong || stalled) { if (P.length < 6) cancelTrack(lost ? 'lost' : out ? 'out' : 'stall'); else finishTrack(); }   // too short to trust: keep looking
 }
 
 function smoothPts(P) {
@@ -909,11 +965,40 @@ function analyzeGround() {
   const med = a => a.sort((p, q) => p - q)[a.length >> 1];
   const hr = med(hs), sr = med(ss), vr = med(vs);
   if (sr < 0.15) return null;                              // turf not distinguishable (grey/white): skip
-  const grass = i => { let dh = Math.abs(hue[i] - hr); if (dh > 180) dh = 360 - dh; return dh < 28 && sat[i] > sr * 0.45 && val[i] > vr * 0.45; };
+  // Sky: the smooth, fairly bright area that reaches the top edge (an overcast or sunset sky can look tan)
+  const sky = new Uint8Array(n), stk = new Int32Array(n);
+  const smooth = i => { const x = i % PW, y = (i / PW) | 0; if (val[i] <= 0.42 || x === 0 || x === PW - 1 || y === 0 || y === PH - 1) return val[i] > 0.42 && (x === 0 || x === PW - 1 || y === 0 || y === PH - 1);
+    return Math.abs(val[i + 1] - val[i - 1]) / 2 + Math.abs(val[i + PW] - val[i - PW]) / 2 < 0.035; };
+  let sp = 0;
+  for (let x = 0; x < PW; x++) if (smooth(x)) { sky[x] = 1; stk[sp++] = x; }
+  while (sp) {
+    const i = stk[--sp], x = i % PW;
+    for (const j of [i - 1, i + 1, i - PW, i + PW]) {
+      if (j < 0 || j >= n || sky[j] || (j === i - 1 && x === 0) || (j === i + 1 && x === PW - 1)) continue;
+      if (smooth(j)) { sky[j] = 1; stk[sp++] = j; }
+    }
+  }
+  // Dormant (yellowed) turf, as fairways look in late autumn and winter: only big patches count
+  const dorm = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (!sky[i] && hue[i] >= 24 && hue[i] <= 50 && sat[i] >= 0.28 && sat[i] <= 0.75 && val[i] >= 0.5) dorm[i] = 1;
+  const minPatch = Math.round(n * 0.002), seen = new Uint8Array(n), comp = new Int32Array(n);
+  for (let s0 = 0; s0 < n; s0++) {
+    if (!dorm[s0] || seen[s0]) continue;
+    let cn = 0; sp = 0; stk[sp++] = s0; seen[s0] = 1;
+    while (sp) {
+      const i = stk[--sp], x = i % PW; comp[cn++] = i;
+      for (const j of [i - 1, i + 1, i - PW, i + PW]) {
+        if (j < 0 || j >= n || seen[j] || !dorm[j] || (j === i - 1 && x === 0) || (j === i + 1 && x === PW - 1)) continue;
+        seen[j] = 1; stk[sp++] = j;
+      }
+    }
+    if (cn < minPatch) for (let k = 0; k < cn; k++) dorm[comp[k]] = 0;
+  }
+  const grass = i => { if (sky[i]) return false; if (dorm[i]) return true; let dh = Math.abs(hue[i] - hr); if (dh > 180) dh = 360 - dh; return dh < 28 && sat[i] > sr * 0.45 && val[i] > vr * 0.45; };
   const gapMax = Math.round(0.07 * PH), top = new Float32Array(PW);
   for (let x = 0; x < PW; x++) {
     let gap = 0, last = ty;
-    for (let y = ty; y > 0; y--) { if (grass(y * PW + x)) { last = y; gap = 0; } else if (++gap > gapMax) break; }
+    for (let y = ty; y > 0; y--) { const i = y * PW + x; if (sky[i]) break; if (grass(i)) { last = y; gap = 0; } else if (++gap > gapMax) break; }
     top[x] = last;
   }
   const sm = new Float32Array(PW);
@@ -921,11 +1006,16 @@ function analyzeGround() {
   const band = []; for (let x = Math.max(0, tx - Math.round(0.25 * PW)); x <= Math.min(PW - 1, tx + Math.round(0.25 * PW)); x++) band.push(sm[x]);
   const yh = med(band);
   if (!(yh < ty - 0.05 * PH)) return null;                 // no visible far ground: skip
-  return { top: sm, yh };
+  // the far edge of the ground near each column (a fairway can reach further back on one side than
+  // on the other); a median over a wide stretch still ignores single trees or lights standing up
+  const loc = new Float32Array(PW), hw = Math.round(0.1 * PW);
+  let locMin = Infinity;
+  for (let x = 0; x < PW; x++) { const w = []; for (let k = Math.max(0, x - hw); k <= Math.min(PW - 1, x + hw); k++) w.push(sm[k]); loc[x] = med(w); locMin = Math.min(locMin, loc[x]); }
+  return { top: sm, yh, loc, locMin };
 }
 // green things standing up from the ground (lit trees, bushes) aren't ground: never let the ground in a
 // column rise noticeably above the far edge of the ground found around the target line
-const groundAt = (x, G = GROUND) => Math.max(G.top[Math.max(0, Math.min(PW - 1, Math.round(x)))], G.yh);
+const groundAt = (x, G = GROUND) => { const i = Math.max(0, Math.min(PW - 1, Math.round(x))); return Math.max(G.top[i], G.loc ? G.loc[i] : G.yh); };
 
 // While the falling part of the line is drawn, look at the picture as it is now: if the phone has moved,
 // the ground is somewhere else on screen. The line stops the moment its head meets the ground seen now.
@@ -939,7 +1029,7 @@ function landOnVisibleGround(tr, now) {
   const hx = (P[k - 1][0] + (P[k][0] - P[k - 1][0]) * a) * PW, hy = (P[k - 1][1] + (P[k][1] - P[k - 1][1]) * a) * PH;
   let topY = Infinity; for (let i = 0; i < k; i++) topY = Math.min(topY, P[i][1] * PH);
   if (hy < topY + 4) return;                               // still climbing / around the top
-  if (hy < GROUND.yh - 0.06 * PH) return;                  // far above any ground: no need to look yet
+  if (hy < (GROUND.locMin !== undefined ? GROUND.locMin : GROUND.yh) - 0.06 * PH) return;   // far above any ground: no need to look yet
   const G = analyzeGround();
   if (!G || hy < groundAt(hx, G)) return;
   tr.pts = P.slice(0, k).concat([[hx / PW, hy / PH]]); tr.ts = T.slice(0, k).concat([tr.tShown]);
@@ -1049,7 +1139,8 @@ function fitPhysics(P, lg, warm) {
   }
   if (obs.length < 4) return null;
   const lo = QLO.slice(), hi = QHI.slice();
-  lo[5] = lg - 0.15; hi[5] = Math.min(lg + 0.05, obs[0].t - 0.01);
+  // the club passing over the ball can make it look gone a little before impact (more so at low frame rates)
+  lo[5] = lg - 0.15; hi[5] = Math.min(lg + 0.25, obs[0].t - 0.01);
   if (hi[5] <= lo[5]) return null;
   const resFn = q => physResiduals(q, tee, obs);
   let best = null;
@@ -1195,8 +1286,8 @@ function buildExtension() {
   return ext;
 }
 
-function cancelTrack() {
-  EV.push({ t: track.last, type: 'cancel', n: track.pts.length });
+function cancelTrack(why) {
+  EV.push({ t: track.last, type: 'cancel', n: track.pts.length, why, pts: track.pts.map(p => [+(p.x / PW).toFixed(3), +(p.y / PH).toFixed(3), +p.t.toFixed(3)]) });
   const i = traces.indexOf(track.trace);
   if (i >= 0) traces.splice(i, 1);
   track = null;
@@ -1208,6 +1299,7 @@ function cancelTrack() {
 function finishTrack() {
   const tr = track.trace;
   tr.live = false;
+  tr.P = track.pts.slice();                 // the sightings (kept for the closer second look in album mode)
   EV.push({ t: track.last, type: 'finish', n: track.pts.length, pts: track.pts.map(p => [+(p.x / PW).toFixed(3), +(p.y / PH).toFixed(3), +p.t.toFixed(3)]) });
   syncTrace(true);
   if (tr.fit && tr.fit.phys) EV.push({ t: track.last, type: 'fit', q: tr.fit.q.map(v => +v.toFixed(2)), rms: +tr.fit.rms.toFixed(2), apexH: +(tr.fit.apexH || 0).toFixed(1), landing: tr.fit.landing && tr.fit.landing.map(v => +v.toFixed(3)), groundYh: GROUND ? +(GROUND.yh / PH).toFixed(3) : null });
@@ -1218,8 +1310,11 @@ function finishTrack() {
     tr.ext = []; tr.extT = [];
   }
   tr.tEnd = performance.now();
-  // discard junk (very short) tracks
-  if (track.pts.length < 6) traces.splice(traces.indexOf(tr), 1);
+  // discard junk: very short tracks, and short ones no ball flight can explain (a club swung around)
+  // ...and things a flight fit says never left the ground (a tee picked up, a ball rolled away by hand)
+  // (only when a real flight is already on screen: a lone low line is still better than nothing for a poor clip)
+  const flat = tr.fit && tr.fit.phys && (tr.fit.apexH || 0) < 1.5 && traces.some(o => o !== tr && o.fit && o.fit.phys && (o.fit.apexH || 0) >= 3);
+  if (track.pts.length < 6 || (track.pts.length < 10 && !(tr.fit && tr.fit.phys)) || flat) traces.splice(traces.indexOf(tr), 1);
   track = null;
   setState('done');
 }
@@ -1301,7 +1396,7 @@ function drawTrace(ctx, m, tr, now, lw = dpr) {
   const W = tr.width * lw, piece = tr._len / 80;
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = tr.color; ctx.globalAlpha = 0.95;
+  ctx.strokeStyle = tr.color; ctx.globalAlpha = Math.max(0.1, Math.min(1, (S.opacity || 40) / 100));
   let acc = 0, pieceLen = 0;
   ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) {
@@ -1417,10 +1512,13 @@ let lastStatus = '';
 function updateStatus() {
   let txt = '대기', cls = '';
   const shaky = performance.now() < shakeUntil;
-  if (state === 'armed') { txt = shaky ? '흔들림 감지 · 폰을 고정하세요' : (teeSet ? '준비됨 · 샷을 치세요' : '공을 탭해서 위치 지정'); cls = shaky ? 'warn' : 'ok'; }
+  if (state === 'armed') {
+    if (needBall()) { txt = '공을 탭하면 추적을 시작해요'; cls = 'warn'; }
+    else { txt = shaky ? '흔들림 감지 · 폰을 고정하세요' : (teeSet ? '준비됨 · 샷을 치세요' : '공을 탭해서 위치 지정'); cls = shaky ? 'warn' : 'ok'; }
+  }
   else if (state === 'tracking') { txt = '추적 중…'; cls = 'rec'; }
   else if (state === 'done') { txt = '궤적 완료'; cls = 'ok'; }
-  else if (state === 'paused') { txt = '일시정지'; cls = ''; }
+  else if (state === 'paused') { txt = stream ? (teeFound ? '대기 · 녹화 버튼을 누르면 추적 시작' : '대기 · 공을 탭하세요') : '일시정지'; cls = ''; }
   if (album && album.label) { txt = album.label; cls = album.cls || ''; }
   const key = txt + cls;
   if (key === lastStatus) return;
@@ -1473,7 +1571,8 @@ async function startCamera() {
   setupZoom();
   requestWake();
   if (S.wx) startWeather();
-  setState('armed');
+  teeSet = false; teeFound = false;      // the ball is tapped anew each time (a spot saved last time means nothing here)
+  setState('paused');                    // standby: tracing begins with the record button (or the play button)
   schedule();
 }
 async function requestWake() {
@@ -1516,9 +1615,8 @@ $('btnClear').onclick = () => { traces = []; if (state === 'tracking') { track =
 $('btnArm').onclick = () => {
   if (state === 'off') return;
   const paused = state === 'paused';
-  if (paused) setState('armed'); else { track = null; setState('paused'); }
-  $('icoPause').style.display = paused ? '' : 'none';
-  $('icoPlay').style.display = paused ? 'none' : '';
+  if (paused) { setState('armed'); if (needBall()) toast('공을 탭하면 추적을 시작해요'); }
+  else { track = null; setState('paused'); }
 };
 
 /* ---------------- Weather (air density + wind for the flight physics) ---------------- */
@@ -1575,10 +1673,10 @@ async function startWeather() {
 
 /* ---------------- Settings UI ---------------- */
 function bindSettings() {
-  const sens = $('sSens'), width = $('sWidth'), wind = $('sWind'), temp = $('sTemp');
-  sens.value = S.sens; width.value = S.width; wind.value = S.wind; temp.value = S.temp;
+  const sens = $('sSens'), width = $('sWidth'), wind = $('sWind'), temp = $('sTemp'), opac = $('sOpacity');
+  sens.value = S.sens; width.value = S.width; wind.value = S.wind; temp.value = S.temp; opac.value = S.opacity;
   const show = () => {
-    $('vSens').textContent = S.sens; $('vWidth').textContent = S.width;
+    $('vSens').textContent = S.sens; $('vWidth').textContent = S.width; $('vOpacity').textContent = S.opacity + '%';
     $('vWind').textContent = S.wind + 'm/s'; $('vTemp').textContent = S.temp + '°';
     $('wxManual').style.display = S.wx ? 'none' : '';
   };
@@ -1598,6 +1696,7 @@ function bindSettings() {
   wx.onchange = () => { S.wx = wx.checked; saveSettings(); show(); if (S.wx) startWeather(); else updateEnv(); };
   sens.oninput = () => { S.sens = +sens.value; show(); saveSettings(); };
   width.oninput = () => { S.width = +width.value; show(); saveSettings(); for (const t of traces) t.width = S.width; };
+  opac.oninput = () => { S.opacity = +opac.value; show(); saveSettings(); };
   for (const [id, key] of [['sAuto', 'auto'], ['sTee', 'tee'], ['sKeep', 'keep'], ['sDebug', 'debug']]) {
     const el = $(id); el.checked = !!S[key];
     el.onchange = () => { S[key] = el.checked; saveSettings(); };
@@ -1669,9 +1768,18 @@ $('btnRec').onclick = () => {
     clearInterval(recTimer);
     $('btnRec').classList.remove('on'); $('recTime').style.display = 'none';
     rec = null;
+    if (stream) {                        // recording over: back to standby, no more lines
+      if (state === 'tracking' && track) finishTrack();
+      track = null; setState('paused');
+    }
     showResult(blob, type);
   });
   if (!rec) { toast('이 기기에서는 녹화를 지원하지 않아요'); return; }
+  if (stream) {                          // a new recording starts clean and starts the tracing
+    traces = [];
+    setState('armed');
+    if (needBall()) toast('공을 탭하면 추적을 시작해요');
+  }
   recStart = performance.now();
   $('btnRec').classList.add('on'); $('recTime').style.display = 'block';
   recTimer = setInterval(() => {
@@ -1791,6 +1899,9 @@ async function albumAnalyzed() {
   if (!traces.length) {
     return albumSetup('공 궤적을 찾지 못했어요.<small>공을 다시 정확히 탭하거나, 설정에서 감도를 올린 뒤 다시 해보세요. 폰을 고정하고 찍은 영상이어야 잘 돼요.</small>');
   }
+  video.pause(); video.playbackRate = 1;
+  setState('off');                          // the seeks below must not feed the tracker again
+  try { await refineAlbum(); } catch (e) { EV.push({ type: 'refineError', msg: String(e && e.message || e) }); }
   setState('off');
   video.pause(); video.playbackRate = 1;
   const onDone = (blob, type) => { album.phase = 'done'; album.label = '완성!'; album.cls = 'ok'; updateStatus(); showResult(blob, type); };
@@ -1810,6 +1921,90 @@ async function albumAnalyzed() {
   album.rec = vs ? makeRecorder(vs, onDone, 12e6) : null;
   if (!album.rec) { albumSetup('이 기기에서는 영상 만들기를 지원하지 않아요.'); return; }
   try { await video.play(); } catch (e) {}
+}
+
+/* ---- second, closer look (album mode) ----
+   Far away the ball is only a few pixels and fades into the sky, so the live tracker loses it early.
+   Afterwards there is time: frame by frame, at the clip's full resolution, look exactly where the
+   fitted flight says the ball should be, comparing with frames a little before and after (the ball
+   has moved on by then, the background has not). Every new sighting refines the flight. */
+const rfc = document.createElement('canvas'), rfx = rfc.getContext('2d', { willReadFrequently: true });
+async function grabCrop(t, sx, sy, w, h) {
+  await seekFrame(t);
+  if (rfc.width !== w || rfc.height !== h) { rfc.width = w; rfc.height = h; }
+  rfx.drawImage(video, sx, sy, w, h, 0, 0, w, h);
+  const d = rfx.getImageData(0, 0, w, h).data, g = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) / 256;
+  return g;
+}
+function traceAt(tr, t) {
+  const T = tr.ts, P = tr.pts; if (!T.length || t < T[0] || t > T[T.length - 1]) return null;
+  let k = T.findIndex(v => v >= t); if (k < 1) k = 1;
+  const a = (t - T[k - 1]) / Math.max(1e-6, T[k] - T[k - 1]);
+  return [P[k - 1][0] + (P[k][0] - P[k - 1][0]) * a, P[k - 1][1] + (P[k][1] - P[k - 1][1]) * a];
+}
+async function refineAlbum() {
+  const FT = frameTimes(); if (FT.length < 10) return;
+  const dt = album.dt || 1 / 30, vw = video.videoWidth, vh = video.videoHeight, k = vw / PW;
+  const gap = Math.max(6, Math.round(0.3 / dt));          // reference frames this far before/after
+  let added = 0;
+  for (const tr of traces) {
+    if (!tr.fit || !tr.fit.phys || !tr.P) continue;
+    if ((tr.fit.apexH || 0) < 3 || tr.fit.rms > 6) continue;           // only lines that already look like a real flight
+    const P = tr.P.slice(), oldEnd = tr.ts[tr.ts.length - 1];
+    let f = tr.fit, last = P[P.length - 1].t, miss = 0, fresh = 0;
+    const rmsOk = Math.max(3, tr.fit.rms + 0.5);           // new points must not make the fit worse than it was
+    let i0 = FT.findIndex(t => t > last + 1e-4);
+    if (i0 < 0) continue;
+    album.label = '공 위치 더 찾는 중…'; updateStatus();
+    for (let i = i0; i < FT.length - gap && FT[i] < last + 3; i++) {
+      const t = FT[i], pr = traceAt(tr, t);
+      if (!pr) break;
+      const X = pr[0] * vw, Y = pr[1] * vh;
+      if (X < 10 || X > vw - 10 || Y < 10 || Y > vh - 10) break;
+      if (GROUND && pr[1] * PH >= groundAt(pr[0] * PW) - 1) break;       // reached the ground
+      const R = Math.round(Math.max(10, 0.012 * vw) * (1 + 0.3 * miss)), pad = 6, w = 2 * (R + pad) + 1;
+      const sx = Math.max(0, Math.min(vw - w, Math.round(X) - R - pad)), sy = Math.max(0, Math.min(vh - w, Math.round(Y) - R - pad));
+      const c = await grabCrop(t, sx, sy, w, w);
+      const r1 = await grabCrop(FT[Math.max(0, i - gap)], sx, sy, w, w);
+      const r2 = await grabCrop(FT[Math.min(FT.length - 1, i + gap)], sx, sy, w, w);
+      // ball = a small spot that differs from both reference frames and from its own surroundings
+      let best = -1e9, bx = 0, by = 0; const sc = [], grid = new Float32Array(w * w).fill(-1e9);
+      // per pixel: how much it changed against BOTH reference frames, in the same direction (a passing ball, not flicker)
+      const td = new Float32Array(w * w);
+      for (let q = 0; q < td.length; q++) { const d1 = c[q] - r1[q], d2 = c[q] - r2[q]; td[q] = d1 * d2 > 0 ? Math.min(Math.abs(d1), Math.abs(d2)) : 0; }
+      for (let y = pad; y < w - pad; y++) for (let x = pad; x < w - pad; x++) {
+        let tsum = 0, csum = 0, sp = 0, cnt = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const q = (y + dy) * w + x + dx; tsum += td[q]; csum += c[q]; }
+        for (let dy = -5; dy <= 5; dy += 5) for (let dx = -5; dx <= 5; dx += 5) if (dx || dy) { sp += c[(y + dy) * w + x + dx]; cnt++; }
+        const q = y * w + x, spot = Math.abs(csum / 9 - sp / cnt);
+        const s = Math.min(tsum / 9, spot) - 0.15 * Math.hypot(x + sx - X, y + sy - Y) * 10 / R;
+        sc.push(s); grid[q] = s; if (s > best) { best = s; bx = x + sx; by = y + sy; }
+      }
+      sc.sort((a, b) => a - b); const medS = sc[sc.length >> 1], p90 = sc[Math.floor(sc.length * 0.9)];
+      // the ball is one small spot: nothing else in the window may score nearly as high (grass texture, a tree edge, a person)
+      let other = -1e9; const lx = bx - sx, ly = by - sy;
+      for (let y = pad; y < w - pad; y++) for (let x = pad; x < w - pad; x++) if (Math.abs(x - lx) > 4 || Math.abs(y - ly) > 4) other = Math.max(other, grid[y * w + x]);
+      if (window.__rdbg) EV.push({ type: 'rdbg', t: +t.toFixed(3), best: +best.toFixed(1), med: +medS.toFixed(1), p90: +p90.toFixed(1), other: +other.toFixed(1), at: [bx, by], pred: [Math.round(X), Math.round(Y)] });
+      if (best > 6 && best > medS + 5 && best > p90 + 4 && other < best * 0.6) {
+        P.push({ x: bx / k, y: by / k, t }); miss = 0; fresh++; added++;
+        if (fresh >= 3) {                                   // refine the flight with what was found so far
+          const nf = fitPhysics(P, f.t0, null);
+          if (nf && nf.rms < rmsOk) { f = nf; track = { pts: P, t0: f.t0, last: t, trace: tr }; sampleTrace(tr, f); track = null; fresh = 0; }
+          else { P.splice(P.length - fresh, fresh); added -= fresh; fresh = 0; break; }   // they don't fit one flight: drop them, stop
+        }
+        last = t;
+      } else if (++miss >= 6) break;
+    }
+    if (fresh) { const nf = fitPhysics(P, f.t0, null); if (nf && nf.rms < rmsOk) { f = nf; track = { pts: P, t0: f.t0, last, trace: tr }; sampleTrace(tr, f); track = null; } else { P.splice(P.length - fresh, fresh); added -= fresh; } }
+    tr.P = P;
+    EV.push({ type: 'refine', added: P.length - tr.fit.obs.length, total: P.length, q: tr.fit.q.map(v => +v.toFixed(2)), apexH: +(tr.fit.apexH || 0).toFixed(1), landing: tr.fit.landing });
+    // the line's growth recorded during analysis: past the old end, keep growing in real time to the new end
+    const newEnd = tr.ts[tr.ts.length - 1], L = tr.log, j0 = L.findIndex(e => e[1] >= oldEnd - 1e-3);
+    if (j0 >= 0) for (let j = j0; j < L.length; j++) L[j][1] = Math.min(newEnd, oldEnd + (L[j][0] - L[j0][0]));
+    for (const e of L) e[1] = Math.min(e[1], newEnd);
+  }
+  return added;
 }
 
 /* ---- frame-exact export (WebCodecs + MP4) ---- */
